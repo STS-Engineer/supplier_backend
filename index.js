@@ -11,13 +11,13 @@ const app = express();
    
 // ✅ CORS config FIRST
 app.use(cors({
-  origin: ['http://localhost:3000'], // add your frontend origin
+  origin: ['https://supplier-mangement.azurewebsites.net'], // add your frontend origin
   credentials: true
 }));
 
 // ✅ Handle preflight requests explicitly
 app.options(/.*/, (req, res) => {
-  res.header('Access-Control-Allow-Origin', 'http://localhost:3000');
+  res.header('Access-Control-Allow-Origin', 'https://supplier-mangement.azurewebsites.net');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.sendStatus(200);
