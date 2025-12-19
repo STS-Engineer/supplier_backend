@@ -792,170 +792,293 @@ router.get('/api/certificates/by-supplier/:supplierId', async (req, res) => {
 });
 
 // 🆕 Create new certificate
-// 🆕 Create new certificate - FIXED
+// 🆕 Create new certificate - FIXED FILE HANDLING
 router.post(
   '/api/certificates',
   upload.single('file'),
   async (req, res) => {
     try {
-      const { unit_id, Type, Date, custom_type } = req.body || {};
+      console.log('📥 Creating certificate request received');
+      console.log('Request body:', req.body);
+      console.log('Request file:', req.file);
+      
+      const { unit_id, Type, Date, validity_date, custom_type } = req.body;
       const file = req.file;
+      
+      // Use either Date or validity_date
+      const certDate = Date || validity_date;
+      
+      console.log('Parsed data:', { 
+        unit_id, 
+        Type, 
+        Date: certDate, 
+        file: file?.filename,
+        custom_type 
+      });
 
-      if (!unit_id || !Type || !Date) {
-        if (file) fs.unlinkSync(file.path);
-        return res.status(400).json({ error: 'Unit ID, type, and date are required' });
+      if (!unit_id || !Type || !certDate) {
+        console.log('❌ Missing required fields:', { unit_id, Type, Date: certDate });
+        // Delete uploaded file if validation fails
+        if (file) {
+          fs.unlinkSync(file.path);
+        }
+        return res.status(400).json({ 
+          error: 'Unit ID, type, and date are required',
+          received: { unit_id, Type, Date: certDate }
+        });
       }
 
-      // ✅ FIXED: Store relative path, not full URL
+      // ✅ IMPORTANT: Store RELATIVE path in database
       const fileUrl = file ? `/uploads/${file.filename}` : null;
       const fileName = file ? file.originalname : null;
       const fileSize = file ? file.size : null;
+      
+      console.log('📂 File info to save:', { fileUrl, fileName, fileSize });
 
       const query = `
         INSERT INTO certificat 
-          (unit_id, "Type", "Date", file_url, file_name, file_size)
-        VALUES ($1, $2, $3, $4, $5, $6)
+          (unit_id, "Type", "Date", file_url, file_name, file_size, custom_type)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *
       `;
 
       const result = await db.query(query, [
         unit_id,
         Type,
-        Date,
+        certDate,
         fileUrl,
         fileName,
-        fileSize
+        fileSize,
+        custom_type || null
       ]);
-
-      res.status(201).json(result.rows[0]);
+      
+      const certificate = result.rows[0];
+      
+      console.log('✅ Certificate created successfully:', certificate);
+      res.status(201).json(certificate);
     } catch (error) {
-      console.error('Error creating certificate:', error);
-      if (req.file) fs.unlinkSync(req.file.path);
-      res.status(500).json({ error: 'Internal server error', details: error.message });
+      console.error('❌ Error creating certificate:', error);
+      
+      // Clean up file if database insert fails
+      if (req.file) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (unlinkError) {
+          console.error('Error deleting file:', unlinkError);
+        }
+      }
+      
+      res.status(500).json({ 
+        error: 'Internal server error',
+        details: error.message 
+      });
     }
   }
 );
 
+// 🆕 Update certificate - FIXED FILE HANDLING
+router.put(
+  '/api/certificates/:id', 
+  upload.single('file'), 
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { Type, Date, validity_date, custom_type, keepExistingFile } = req.body;
+      const file = req.file;
 
-// 🆕 Update certificate
-// 🆕 Update certificate - UPDATED
-router.put('/api/certificates/:id', upload.single('file'), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { Type, Date, custom_type, keepExistingFile } = req.body;
-    const file = req.file;
+      // Use either Date or validity_date
+      const certDate = Date || validity_date;
 
-    console.log('📝 Updating certificate:', {
-      id, Type, Date, custom_type,
-      keepExistingFile,
-      hasFile: !!file,
-      fileInfo: file ? {
-        filename: file.filename,
-        originalname: file.originalname,
-        size: file.size
-      } : null
-    });
+      console.log('📝 Updating certificate:', {
+        id, 
+        Type, 
+        Date: certDate, 
+        custom_type,
+        keepExistingFile,
+        hasNewFile: !!file,
+        fileInfo: file ? {
+          filename: file.filename,
+          originalname: file.originalname,
+          size: file.size
+        } : null
+      });
 
-    if (!Type || !Date) {
-      return res.status(400).json({ error: 'Type and date are required' });
-    }
+      if (!Type || !certDate) {
+        if (file) {
+          fs.unlinkSync(file.path);
+        }
+        return res.status(400).json({ 
+          error: 'Type and date are required'
+        });
+      }
 
-    // First, get the current certificate
-    const currentCert = await db.query(
-      'SELECT file_url, file_name, file_size FROM certificat WHERE certificat_id = $1',
-      [id]
-    );
+      // Get current certificate data
+      const currentCert = await db.query(
+        'SELECT file_url, file_name, file_size FROM certificat WHERE certificat_id = $1',
+        [id]
+      );
 
-    if (currentCert.rows.length === 0) {
-      return res.status(404).json({ error: 'Certificate not found' });
-    }
+      if (currentCert.rows.length === 0) {
+        if (file) {
+          fs.unlinkSync(file.path);
+        }
+        return res.status(404).json({ error: 'Certificate not found' });
+      }
 
-    let fileUrl = currentCert.rows[0].file_url;
-    let fileName = currentCert.rows[0].file_name;
-    let fileSize = currentCert.rows[0].file_size;
+      let fileUrl = currentCert.rows[0].file_url;
+      let fileName = currentCert.rows[0].file_name;
+      let fileSize = currentCert.rows[0].file_size;
 
-    if (file) {
-      // New file uploaded - update all file data
-      fileUrl = `/uploads/${file.filename}`;
-      fileName = file.originalname;
-      fileSize = file.size;
+      if (file) {
+        // New file uploaded - update file info
+        fileUrl = `/uploads/${file.filename}`;
+        fileName = file.originalname;
+        fileSize = file.size;
 
-      // Delete old file if it exists
-      if (currentCert.rows[0]?.file_url) {
-        const oldFilePath = path.join(__dirname, '..', currentCert.rows[0].file_url);
-        if (fs.existsSync(oldFilePath)) {
-          fs.unlinkSync(oldFilePath);
+        // Delete old file if exists
+        if (currentCert.rows[0]?.file_url) {
+          const oldFilePath = path.join(__dirname, '..', currentCert.rows[0].file_url);
+          if (fs.existsSync(oldFilePath)) {
+            try {
+              fs.unlinkSync(oldFilePath);
+              console.log('🗑️ Deleted old file:', oldFilePath);
+            } catch (err) {
+              console.error('Error deleting old file:', err);
+            }
+          }
+        }
+      } else if (keepExistingFile !== 'true') {
+        // No new file and not keeping existing - clear file data
+        if (currentCert.rows[0]?.file_url) {
+          const oldFilePath = path.join(__dirname, '..', currentCert.rows[0].file_url);
+          if (fs.existsSync(oldFilePath)) {
+            try {
+              fs.unlinkSync(oldFilePath);
+              console.log('🗑️ Deleted file:', oldFilePath);
+            } catch (err) {
+              console.error('Error deleting file:', err);
+            }
+          }
+        }
+        fileUrl = null;
+        fileName = null;
+        fileSize = null;
+      }
+
+      const query = `
+        UPDATE certificat
+        SET 
+          "Type" = $1, 
+          "Date" = $2, 
+          file_url = $3, 
+          file_name = $4, 
+          file_size = $5,
+          custom_type = $6
+        WHERE certificat_id = $7
+        RETURNING *
+      `;
+
+      const result = await db.query(query, [
+        Type,
+        certDate,
+        fileUrl,
+        fileName,
+        fileSize,
+        custom_type || null,
+        id
+      ]);
+
+      console.log('✅ Certificate updated successfully:', result.rows[0]);
+      res.json(result.rows[0]);
+    } catch (error) {
+      console.error('❌ Error updating certificate:', error);
+      
+      if (req.file) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (unlinkError) {
+          console.error('Error deleting uploaded file:', unlinkError);
         }
       }
-    } else if (keepExistingFile !== 'true') {
-      // No file and not keeping existing - clear file data
-      fileUrl = null;
-      fileName = null;
-      fileSize = null;
-
-      // Delete old file if it exists
-      if (currentCert.rows[0]?.file_url) {
-        const oldFilePath = path.join(__dirname, '..', currentCert.rows[0].file_url);
-        if (fs.existsSync(oldFilePath)) {
-          fs.unlinkSync(oldFilePath);
-        }
-      }
+      
+      res.status(500).json({
+        error: 'Internal server error',
+        details: error.message
+      });
     }
-    // If keepExistingFile === 'true', keep the current file data
-
-    const query = `
-      UPDATE certificat
-      SET 
-        "Type" = $1, 
-        "Date" = $2, 
-        file_url = $3, 
-        file_name = $4, 
-        file_size = $5
-      WHERE certificat_id = $6
-      RETURNING *
-    `;
-
-    const result = await db.query(query, [
-      Type,
-      Date,
-      fileUrl,
-      fileName,
-      fileSize,
-      id
-    ]);
-
-    console.log('✅ Certificate updated:', result.rows[0]);
-
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Error updating certificate:', error);
-    res.status(500).json({
-      error: 'Internal server error',
-      details: error.message
-    });
   }
-});
+);
 
-// 🆕 Delete certificate
+// 🆕 Delete certificate - WITH FILE CLEANUP
 router.delete('/api/certificates/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
+    // Get certificate to find associated file
+    const certQuery = await db.query(
+      'SELECT file_url FROM certificat WHERE certificat_id = $1',
+      [id]
+    );
+
+    if (certQuery.rows.length === 0) {
+      return res.status(404).json({ error: 'Certificate not found' });
+    }
+
+    // Delete the file if it exists
+    if (certQuery.rows[0]?.file_url) {
+      const filePath = path.join(__dirname, '..', certQuery.rows[0].file_url);
+      if (fs.existsSync(filePath)) {
+        try {
+          fs.unlinkSync(filePath);
+          console.log('🗑️ Deleted file:', filePath);
+        } catch (err) {
+          console.error('Error deleting file:', err);
+        }
+      }
+    }
+
+    // Delete certificate from database
     const result = await db.query(
       'DELETE FROM certificat WHERE certificat_id = $1 RETURNING *',
       [id]
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Certificate not found' });
-    }
-
+    console.log('✅ Certificate deleted successfully');
     res.json({
       message: 'Certificate deleted successfully',
       deletedCertificate: result.rows[0]
     });
   } catch (error) {
-    console.error('Error deleting certificate:', error);
+    console.error('❌ Error deleting certificate:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// 🆕 Get certificate file (for preview/download)
+router.get('/api/certificates/:id/file', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const query = await db.query(
+      'SELECT file_url, file_name FROM certificat WHERE certificat_id = $1',
+      [id]
+    );
+    
+    if (query.rows.length === 0 || !query.rows[0].file_url) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    
+    const filePath = path.join(__dirname, '..', query.rows[0].file_url);
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found on server' });
+    }
+    
+    // Set proper content-disposition header
+    res.setHeader('Content-Disposition', `attachment; filename="${query.rows[0].file_name}"`);
+    res.sendFile(filePath);
+  } catch (error) {
+    console.error('Error fetching certificate file:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
