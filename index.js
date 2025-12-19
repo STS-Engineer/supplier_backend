@@ -1,12 +1,19 @@
 const express = require('express');
+const bodyParser = require('body-parser');
 const cors = require('cors');
+const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+    
 
 const supplierapp = require('./services/supplier');
 
 const app = express();
-
+// Middleware
+// ✅ MUST be before routes
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+   
 // ✅ CORS config FIRST
 app.use(cors({
   origin: ['https://supplier-mangement.azurewebsites.net'], // add your frontend origin
@@ -14,56 +21,67 @@ app.use(cors({
 }));
 
 // ✅ Handle preflight requests explicitly
-app.options('*', (req, res) => { 
-  res.header('Access-Control-Allow-Origin', 'https://supplier-mangement.azurewebsites.net');      
+app.options(/.*/, (req, res) => { 
+  res.header('Access-Control-Allow-Origin', 'https://supplier-mangement.azurewebsites.net');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.sendStatus(200);
 });
 
-// ✅ Body parsers - MUST be before routes
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+//file type 
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadDir = path.join(__dirname, './uploads');
+    
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    // Create unique filename with timestamp
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    cb(null, 'certificate-' + uniqueSuffix + ext);
+  }
+});
 
-// ✅ Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-  console.log('✅ Created uploads directory:', uploadsDir);
-}
+// File filter for allowed types
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = [
+    'application/pdf',
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ];
+  
+  if (allowedTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Invalid file type. Only PDF, JPEG, PNG, and Word documents are allowed.'), false);
+  }
+};
 
-// ✅ Serve static files from uploads directory
-app.use('/uploads', express.static(uploadsDir));
-console.log('✅ Serving static files from:', uploadsDir);
+const upload = multer({
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  }
+});
 
-// ✅ Routes - supplier.js handles all /ajouter/* routes including certificates
+
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Routes
 app.use('/ajouter', supplierapp);
-
-// ✅ Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    uploadsDir: uploadsDir,
-    uploadsDirExists: fs.existsSync(uploadsDir)
-  });
-});
-
-// ✅ 404 handler
-app.use((req, res) => {
-  res.status(404).json({ error: 'Route not found' });
-});
-
-// ✅ Error handler
-app.use((err, req, res, next) => {
-  console.error('Error:', err);
-  res.status(500).json({ 
-    error: 'Internal server error',
-    message: err.message 
-  });
-});
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Server running on port ${PORT}`);
-  console.log(`✅ Uploads directory: ${uploadsDir}`);
+  console.log(`Server running on port ${PORT}`);
 });
