@@ -117,7 +117,7 @@ app.post('/api/certificates', upload.single('file'), async (req, res) => {
     const certificate = result.rows[0];
     
     // Return full file URL for frontend
-    certificate.file_url = filePath ? `http://localhost:5000${filePath}` : null;
+    certificate.file_url = filePath ? `${filePath}` : null;
     
     console.log('✅ Certificate created:', certificate);
     res.status(201).json(certificate);
@@ -208,7 +208,7 @@ app.put('/api/certificates/:id', upload.single('file'), async (req, res) => {
     const result = await db.query(query, [Type, Date, filePath, id]);
     
     const certificate = result.rows[0];
-    certificate.file_url = filePath ? `http://localhost:5000${filePath}` : null;
+    certificate.file_url = filePath ? `https://supplier-back.azurewebsites.net${filePath}` : null;
     
     console.log('✅ Certificate updated:', certificate);
     res.json(certificate);
