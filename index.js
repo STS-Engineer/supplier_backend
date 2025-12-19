@@ -266,8 +266,6 @@ app.delete('/api/certificates/:id', async (req, res) => {
   }
 });
 
-// 🆕 Serve uploaded files statically
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // 🆕 Get certificate file (for preview/download)
 app.get('/api/certificates/:id/file', async (req, res) => {
