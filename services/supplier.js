@@ -792,7 +792,7 @@ router.get('/api/certificates/by-supplier/:supplierId', async (req, res) => {
 });
 
 // 🆕 Create new certificate
-// 🆕 Create new certificate - UPDATED
+// 🆕 Create new certificate - FIXED
 router.post(
   '/api/certificates',
   upload.single('file'),
@@ -801,29 +801,13 @@ router.post(
       const { unit_id, Type, Date, custom_type } = req.body || {};
       const file = req.file;
 
-      console.log('📥 Creating certificate with:', {
-        unit_id, Type, Date, custom_type,
-        hasFile: !!file,
-        fileInfo: file ? {
-          filename: file.filename,
-          originalname: file.originalname,
-          size: file.size,
-          path: file.path
-        } : null
-      });
-
       if (!unit_id || !Type || !Date) {
-        // Clean up uploaded file if validation fails
-        if (file) {
-          fs.unlinkSync(file.path);
-        }
-        return res.status(400).json({
-          error: 'Unit ID, type, and date are required'
-        });
+        if (file) fs.unlinkSync(file.path);
+        return res.status(400).json({ error: 'Unit ID, type, and date are required' });
       }
 
-      // Prepare file data
-      const fileUrl = file ? `/uploads/${file.filename}` : null;  // Note: path is /uploads/ not /uploads/certificates/
+      // ✅ FIXED: Store relative path, not full URL
+      const fileUrl = file ? `/uploads/${file.filename}` : null;
       const fileName = file ? file.originalname : null;
       const fileSize = file ? file.size : null;
 
@@ -843,19 +827,11 @@ router.post(
         fileSize
       ]);
 
-      console.log('✅ Certificate created:', result.rows[0]);
-
       res.status(201).json(result.rows[0]);
     } catch (error) {
-      console.error('❌ Error creating certificate:', error);
-      // Clean up uploaded file on error
-      if (req.file) {
-        fs.unlinkSync(req.file.path);
-      }
-      res.status(500).json({
-        error: 'Internal server error',
-        details: error.message
-      });
+      console.error('Error creating certificate:', error);
+      if (req.file) fs.unlinkSync(req.file.path);
+      res.status(500).json({ error: 'Internal server error', details: error.message });
     }
   }
 );
