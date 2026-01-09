@@ -53,6 +53,35 @@ const upload = multer({
   }
 });
 
+
+// Configure multer for plants file uploads
+const plantsStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadDir = path.join(__dirname, '..', 'uploads', 'plants');
+
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    // Create unique filename with timestamp
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    cb(null, 'plant-agreement-' + uniqueSuffix + ext);
+  }
+});
+
+const plantsUpload = multer({
+  storage: plantsStorage,
+  fileFilter: fileFilter, // Reuse the same file filter
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  }
+});
+
 // Get all groups with their units (existing)
 router.get('/api/groups', async (req, res) => {
   try {
@@ -228,6 +257,7 @@ router.get('/api/groups', async (req, res) => {
 
 
 // Get unit details by ID (existing)
+// Update the existing /api/units/:id endpoint
 router.get('/api/units/:id', async (req, res) => {
   try {
     const query = `
@@ -255,6 +285,26 @@ router.get('/api/units/:id', async (req, res) => {
     }
 
     const unit = result.rows[0];
+    
+    // Fetch plants for this unit
+    const plantsQuery = `
+      SELECT 
+        plant_id,
+        plant,
+        "Acheteur_avo",
+        alias,
+        top,
+        incoterms,
+        "place of incoterms" as place_of_incoterms,
+        fichier_accord,
+        unit_id
+      FROM plants 
+      WHERE unit_id = $1
+      ORDER BY plant
+    `;
+    
+    const plantsResult = await db.query(plantsQuery, [req.params.id]);
+    
     const unitDetails = {
       unit_id: unit.unit_id,
       unit_name: unit.unit_name,
@@ -313,6 +363,8 @@ router.get('/api/units/:id', async (req, res) => {
       top: unit.top,
       status: unit.status,
       category: unit.category,
+      // Plants from separate table
+      plants: plantsResult.rows,
       // Responsible Person
       responsible: unit.Person_id ? {
         Person_id: unit.Person_id,
@@ -925,7 +977,7 @@ router.delete('/api/certificates/:id', async (req, res) => {
 });
 
 // 🆕 Get complete customer data (group with units, responsible persons, and certificates)
-// 🆕 Get complete customer data (group with units, responsible persons, and certificates)
+// Update the existing complete customer endpoint to include plants
 router.get('/api/groups/:id/complete', async (req, res) => {
   try {
     const groupQuery = `
@@ -954,9 +1006,10 @@ router.get('/api/groups/:id/complete', async (req, res) => {
     `;
     const unitsResult = await db.query(unitsQuery, [req.params.id]);
 
-    // Get certificates for each unit
-    const unitsWithCertificates = await Promise.all(
+    // Get plants and certificates for each unit
+    const unitsWithAllData = await Promise.all(
       unitsResult.rows.map(async (unit) => {
+        // Get certificates for this unit
         const certificatesQuery = `
           SELECT 
             certificat_id,
@@ -972,16 +1025,35 @@ router.get('/api/groups/:id/complete', async (req, res) => {
         `;
         const certificatesResult = await db.query(certificatesQuery, [unit.unit_id]);
 
+        // Get plants for this unit
+        const plantsQuery = `
+          SELECT 
+            plant_id,
+            plant,
+            "Acheteur_avo",
+            alias,
+            top,
+            incoterms,
+            "place of incoterms" as place_of_incoterms,
+            fichier_accord,
+            unit_id
+          FROM plants 
+          WHERE unit_id = $1
+          ORDER BY plant
+        `;
+        const plantsResult = await db.query(plantsQuery, [unit.unit_id]);
+
         return {
           ...unit,
-          certificates: certificatesResult.rows
+          certificates: certificatesResult.rows,
+          plants: plantsResult.rows
         };
       })
     );
 
     const customerData = {
       ...groupResult.rows[0],
-      units: unitsWithCertificates.map(unit => {
+      units: unitsWithAllData.map(unit => {
         // Create unit object with all fields
         const unitObj = {
           unit_id: unit.unit_id,
@@ -1061,37 +1133,24 @@ router.get('/api/groups/:id/complete', async (req, res) => {
             file_name: cert.file_name,
             file_size: cert.file_size,
             unit_id: cert.unit_id
+          })),
+          // Plants for this unit
+          plants: (unit.plants || []).map(plant => ({
+            plant_id: plant.plant_id,
+            plant: plant.plant,
+            Acheteur_avo: plant.Acheteur_avo,
+            alias: plant.alias,
+            top: plant.top,
+            incoterms: plant.incoterms,
+            place_of_incoterms: plant.place_of_incoterms,
+            fichier_accord: plant.fichier_accord,
+            unit_id: plant.unit_id
           }))
         };
-
-        // Debug log for each unit
-        console.log('🔍 Unit data being returned:', {
-          unit_id: unit.unit_id,
-          unit_name: unit.unit_name,
-          mainplants: unit.mainplants,
-          plant: unit.plant,
-          top: unit.top,
-          status: unit.status,
-          category: unit.category
-        });
 
         return unitObj;
       })
     };
-
-    console.log('🔍 Backend complete endpoint returning:', {
-      groupName: customerData.supplier_name,
-      unitsCount: customerData.units.length,
-      firstUnit: {
-        name: customerData.units[0]?.unit_name,
-        mainplants: customerData.units[0]?.mainplants,
-        plant: customerData.units[0]?.plant,
-        top: customerData.units[0]?.top,
-        status: customerData.units[0]?.status,
-        category: customerData.units[0]?.category
-      },
-      firstUnitCertificates: customerData.units[0]?.certificates?.length || 0
-    });
 
     res.json(customerData);
   } catch (error) {
@@ -1123,5 +1182,274 @@ router.get('/api/persons', async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+
+// ==================== PLANTS TO DELIVER ROUTES ====================
+
+// 🆕 Get all plants for a unit
+router.get('/api/plants/by-unit/:unitId', async (req, res) => {
+  try {
+    const { unitId } = req.params;
+
+    const query = `
+      SELECT 
+        plant_id,
+        plant,
+        "Acheteur_avo",
+        alias,
+        top,
+        incoterms,
+        "place of incoterms" as place_of_incoterms,
+        fichier_accord,
+        unit_id
+      FROM plants 
+      WHERE unit_id = $1
+      ORDER BY plant
+    `;
+
+    const result = await db.query(query, [unitId]);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching plants:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// 🆕 Get a specific plant by ID
+router.get('/api/plants/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const query = `
+      SELECT 
+        plant_id,
+        plant,
+        "Acheteur_avo",
+        alias,
+        top,
+        incoterms,
+        "place of incoterms" as place_of_incoterms,
+        fichier_accord,
+        unit_id
+      FROM plants 
+      WHERE plant_id = $1
+    `;
+
+    const result = await db.query(query, [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Plant not found' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching plant:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// 🆕 Create new plant
+router.post(
+  '/api/plants',
+  plantsUpload.single('fichier_accord'),
+  async (req, res) => {
+    try {
+      const { 
+        unit_id, 
+        plant, 
+        Acheteur_avo, 
+        alias, 
+        top, 
+        incoterms, 
+        place_of_incoterms 
+      } = req.body || {};
+      
+      const file = req.file;
+
+      // Validate required fields
+      if (!unit_id || !plant) {
+        if (file) fs.unlinkSync(file.path);
+        return res.status(400).json({ error: 'Unit ID and plant name are required' });
+      }
+
+      // Store file path if uploaded
+      const fichier_accord = file ? `/uploads/plants/${file.filename}` : null;
+
+      const query = `
+        INSERT INTO plants 
+          (
+            unit_id, 
+            plant,
+            "Acheteur_avo", 
+            alias, 
+            top, 
+            incoterms, 
+            "place of incoterms",
+            fichier_accord
+          )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING *
+      `;
+
+      const result = await db.query(query, [
+        unit_id,
+        plant,
+        Acheteur_avo || null,
+        alias || null,
+        top || null,
+        incoterms || null,
+        place_of_incoterms || null,
+        fichier_accord
+      ]);
+
+      res.status(201).json(result.rows[0]);
+    } catch (error) {
+      console.error('Error creating plant:', error);
+      if (req.file) fs.unlinkSync(req.file.path);
+      res.status(500).json({ 
+        error: 'Internal server error', 
+        details: error.message 
+      });
+    }
+  }
+);
+
+// 🆕 Update plant
+router.put(
+  '/api/plants/:id',
+  plantsUpload.single('fichier_accord'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { 
+        unit_id, 
+        plant, 
+        Acheteur_avo, 
+        alias, 
+        top, 
+        incoterms, 
+        place_of_incoterms,
+        keepExistingFile 
+      } = req.body || {};
+      
+      const file = req.file;
+
+      // Validate required fields
+      if (!plant) {
+        return res.status(400).json({ error: 'Plant name is required' });
+      }
+
+      // First, get the current plant
+      const currentPlant = await db.query(
+        'SELECT fichier_accord FROM plants WHERE plant_id = $1',
+        [id]
+      );
+
+      if (currentPlant.rows.length === 0) {
+        return res.status(404).json({ error: 'Plant not found' });
+      }
+
+      let fichier_accord = currentPlant.rows[0].fichier_accord;
+
+      if (file) {
+        // New file uploaded - update file path
+        fichier_accord = `/uploads/plants/${file.filename}`;
+
+        // Delete old file if it exists
+        if (currentPlant.rows[0]?.fichier_accord) {
+          const oldFilePath = path.join(__dirname, '..', currentPlant.rows[0].fichier_accord);
+          if (fs.existsSync(oldFilePath)) {
+            fs.unlinkSync(oldFilePath);
+          }
+        }
+      } else if (keepExistingFile !== 'true') {
+        // No file and not keeping existing - clear file data
+        fichier_accord = null;
+
+        // Delete old file if it exists
+        if (currentPlant.rows[0]?.fichier_accord) {
+          const oldFilePath = path.join(__dirname, '..', currentPlant.rows[0].fichier_accord);
+          if (fs.existsSync(oldFilePath)) {
+            fs.unlinkSync(oldFilePath);
+          }
+        }
+      }
+
+      const query = `
+        UPDATE plants
+        SET 
+          plant = $1,
+          "Acheteur_avo" = $2,
+          alias = $3,
+          top = $4,
+          incoterms = $5,
+          "place of incoterms" = $6,
+          fichier_accord = $7
+        WHERE plant_id = $8
+        RETURNING *
+      `;
+
+      const result = await db.query(query, [
+        plant,
+        Acheteur_avo || null,
+        alias || null,
+        top || null,
+        incoterms || null,
+        place_of_incoterms || null,
+        fichier_accord,
+        id
+      ]);
+
+      res.json(result.rows[0]);
+    } catch (error) {
+      console.error('Error updating plant:', error);
+      res.status(500).json({ 
+        error: 'Internal server error', 
+        details: error.message 
+      });
+    }
+  }
+);
+
+// 🆕 Delete plant
+router.delete('/api/plants/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // First, get the plant to delete the associated file
+    const plantResult = await db.query(
+      'SELECT fichier_accord FROM plants WHERE plant_id = $1',
+      [id]
+    );
+
+    if (plantResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Plant not found' });
+    }
+
+    // Delete associated file if it exists
+    if (plantResult.rows[0]?.fichier_accord) {
+      const filePath = path.join(__dirname, '..', plantResult.rows[0].fichier_accord);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+
+    // Delete the plant record
+    const result = await db.query(
+      'DELETE FROM plants WHERE plant_id = $1 RETURNING *',
+      [id]
+    );
+
+    res.json({
+      message: 'Plant deleted successfully',
+      deletedPlant: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error deleting plant:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
 
 module.exports = router;
