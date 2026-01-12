@@ -89,6 +89,7 @@ router.get('/api/groups', async (req, res) => {
       SELECT 
         g.supplier_id,
         g.supplier_name,
+        g.responsible_group,
         g.description,
         u.unit_id,
         u.unit_name,
@@ -137,15 +138,7 @@ router.get('/api/groups', async (req, res) => {
         u.quality_agreement,
         u.terms_purshase,
         u.logistics_agreement,
-        u.payment_conditions,
-        u.tech_key_account,
         u.document_file,
-        u.mainplants,
-        u.responsible,
-        u.plant,
-        u.top,
-        u.status,
-        u.category,
         -- Responsible Person
         p."Person_id",
         p.first_name,
@@ -168,6 +161,7 @@ router.get('/api/groups', async (req, res) => {
         groups[row.supplier_id] = {
           supplier_id: row.supplier_id,
           supplier_name: row.supplier_name,
+          responsible_group: row.responsible_group,
           description: row.description,
           units: []
         };
@@ -222,15 +216,7 @@ router.get('/api/groups', async (req, res) => {
           quality_agreement: row.quality_agreement,
           terms_purshase: row.terms_purshase,
           logistics_agreement: row.logistics_agreement,
-          payment_conditions: row.payment_conditions,
-          tech_key_account: row.tech_key_account,
           document_file: row.document_file,
-          mainplants: row.mainplants,
-          responsible_text: row.responsible, // to avoid confusion with Person
-          plant: row.plant,
-          top: row.top,
-          status: row.status,
-          category: row.category,
           // Responsible Person
           responsible: row.Person_id ? {
             Person_id: row.Person_id,
@@ -264,6 +250,7 @@ router.get('/api/units/:id', async (req, res) => {
       SELECT 
         u.*,
         g.supplier_name,
+        g.responsible_group,
         p."Person_id",
         p.first_name,
         p.last_name,
@@ -285,7 +272,7 @@ router.get('/api/units/:id', async (req, res) => {
     }
 
     const unit = result.rows[0];
-    
+
     // Fetch plants for this unit
     const plantsQuery = `
       SELECT 
@@ -302,13 +289,14 @@ router.get('/api/units/:id', async (req, res) => {
       WHERE unit_id = $1
       ORDER BY plant
     `;
-    
+
     const plantsResult = await db.query(plantsQuery, [req.params.id]);
-    
+
     const unitDetails = {
       unit_id: unit.unit_id,
       unit_name: unit.unit_name,
       supplier_name: unit.supplier_name,
+      responsible_group: unit.responsible_group,
       city: unit.city,
       country: unit.country,
       zone_name: unit.zone_name,
@@ -354,15 +342,7 @@ router.get('/api/units/:id', async (req, res) => {
       quality_agreement: unit.quality_agreement,
       terms_purshase: unit.terms_purshase,
       logistics_agreement: unit.logistics_agreement,
-      payment_conditions: unit.payment_conditions,
-      tech_key_account: unit.tech_key_account,
       document_file: unit.document_file,
-      mainplants: unit.mainplants,
-      responsible_text: unit.responsible,
-      plant: unit.plant,
-      top: unit.top,
-      status: unit.status,
-      category: unit.category,
       // Plants from separate table
       plants: plantsResult.rows,
       // Responsible Person
@@ -388,19 +368,19 @@ router.get('/api/units/:id', async (req, res) => {
 // 🆕 Create new group
 router.post('/api/groups', async (req, res) => {
   try {
-    const { supplier_name, description } = req.body;
+    const { supplier_name, responsible_group , description } = req.body;
 
     if (!supplier_name) {
       return res.status(400).json({ error: 'Supplier name is required' });
     }
 
     const query = `
-      INSERT INTO supplier (supplier_name, description)
-      VALUES ($1, $2)
+      INSERT INTO supplier (supplier_name,responsible_group, description)
+      VALUES ($1, $2, $3)
       RETURNING *
     `;
 
-    const result = await db.query(query, [supplier_name, description || null]);
+    const result = await db.query(query, [supplier_name,responsible_group, description || null]);
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Error creating group:', error);
@@ -411,7 +391,7 @@ router.post('/api/groups', async (req, res) => {
 // 🆕 Update group
 router.put('/api/groups/:id', async (req, res) => {
   try {
-    const { supplier_name, description } = req.body;
+    const { supplier_name,responsible_group, description } = req.body;
     const { id } = req.params;
 
     if (!supplier_name) {
@@ -420,12 +400,12 @@ router.put('/api/groups/:id', async (req, res) => {
 
     const query = `
       UPDATE supplier
-      SET supplier_name = $1, description = $2
-      WHERE supplier_id = $3
+      SET supplier_name = $1 , responsible_group = $2, description = $3
+      WHERE supplier_id = $4
       RETURNING *
     `;
 
-    const result = await db.query(query, [supplier_name, description || null, id]);
+    const result = await db.query(query, [supplier_name, responsible_group, description || null, id]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Group not found' });
@@ -443,28 +423,25 @@ router.delete('/api/groups/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // ✅ First, delete all units related to the group
-    await db.query('DELETE FROM unit WHERE supplier_id = $1', [id]);
-
-    // ✅ Then delete the group itself
-    const deleteGroup = await db.query(
+    const result = await db.query(
       'DELETE FROM supplier WHERE supplier_id = $1 RETURNING *',
       [id]
     );
 
-    if (deleteGroup.rows.length === 0) {
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Group not found' });
     }
 
     res.json({
-      message: 'Group and associated units deleted successfully',
-      deletedGroup: deleteGroup.rows[0]
+      message: 'Group, units, and plants deleted successfully',
+      deletedGroup: result.rows[0],
     });
   } catch (error) {
     console.error('Error deleting group:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
 
 
 // Add this to your backend routes/customers.js
@@ -579,8 +556,8 @@ router.post('/api/units', async (req, res) => {
       shippping_address_search, shipping_street, shipping_city,
       shipping_state, shipping_zip, shipping_country, copy_billing,
       confidentiality_agreement, quality_agreement, terms_purshase,
-      logistics_agreement, payment_conditions, tech_key_account,
-      document_file, mainplants, responsible, plant, top, status, category
+      logistics_agreement,
+      document_file
     } = req.body;
 
     // Required fields check
@@ -601,16 +578,15 @@ router.post('/api/units', async (req, res) => {
         shippping_address_search, shipping_street, shipping_city,
         shipping_state, shipping_zip, shipping_country, copy_billing,
         confidentiality_agreement, quality_agreement, terms_purshase,
-        logistics_agreement, payment_conditions, tech_key_account, 
-        document_file, mainplants, plant, top, status, category, responsible
+        logistics_agreement, document_file
       )
       VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
         $11, $12, $13, $14, $15, $16, $17, $18, $19,
         $20, $21, $22, $23, $24, $25, $26, $27, $28,
         $29, $30, $31, $32, $33, $34, $35, $36, $37,
-        $38, $39, $40, $41, $42, $43, $44, $45, $46,
-        $47, $48, $49, $50, $51, $52, $53
+        $38, $39, $40, $41, $42, $43, $44, $45
+       
       )
       RETURNING *;
     `;
@@ -639,20 +615,9 @@ router.post('/api/units', async (req, res) => {
       terms_purshase ? (terms_purshase === 'true' || terms_purshase === true) : false,
       // Convert to boolean
       logistics_agreement ? (logistics_agreement === 'true' || logistics_agreement === true) : false,
-      payment_conditions || null, tech_key_account || null,
       document_file || null,
-      // NEW FIELDS - make sure mainplants is properly formatted
-      mainplants ? (Array.isArray(mainplants) ? mainplants.join(',') : mainplants) : null,
-      plant || null,
-      top || null,
-      status || null,
-      category || null,
-      responsible || null  // This should come last
+     
     ];
-
-    console.log('VALUES ARRAY LENGTH:', values.length); // This should be 53
-    console.log('Main plants value:', mainplants);
-    console.log('Responsible value:', responsible);
 
     const result = await db.query(query, values);
     console.log('Unit created successfully:', result.rows[0]);
@@ -681,8 +646,8 @@ router.put('/api/units/:id', async (req, res) => {
       shippping_address_search, shipping_street, shipping_city,
       shipping_state, shipping_zip, shipping_country, copy_billing,
       confidentiality_agreement, quality_agreement, terms_purshase,
-      logistics_agreement, payment_conditions, tech_key_account,
-      document_file, mainplants, responsible, plant, top, status, category
+      logistics_agreement,
+      document_file
     } = req.body;
 
     const query = `
@@ -705,10 +670,8 @@ router.put('/api/units/:id', async (req, res) => {
         shipping_country = $39, copy_billing = $40,
         confidentiality_agreement = $41, quality_agreement = $42, 
         terms_purshase = $43, logistics_agreement = $44, 
-        payment_conditions = $45, tech_key_account = $46, 
-        document_file = $47, mainplants = $48, plant = $49, 
-        top = $50, status = $51, category = $52, responsible = $53
-      WHERE unit_id = $54
+        document_file = $45
+      WHERE unit_id = $46
       RETURNING *;
     `;
 
@@ -730,10 +693,7 @@ router.put('/api/units/:id', async (req, res) => {
       quality_agreement ? (quality_agreement === 'true' || quality_agreement === true) : false,
       terms_purshase ? (terms_purshase === 'true' || terms_purshase === true) : false,
       logistics_agreement ? (logistics_agreement === 'true' || logistics_agreement === true) : false,
-      payment_conditions || null, tech_key_account || null,
       document_file || null,
-      mainplants ? (Array.isArray(mainplants) ? mainplants.join(',') : mainplants) : null,
-      plant || null, top || null, status || null, category || null, responsible || null,
       unitId
     ];
 
@@ -805,8 +765,7 @@ router.get('/api/certificates/by-supplier/:supplierId', async (req, res) => {
   }
 });
 
-// 🆕 Create new certificate
-// 🆕 Create new certificate - UPDATED
+
 // 🆕 Create new certificate - FIXED
 router.post(
   '/api/certificates',
@@ -1103,16 +1062,8 @@ router.get('/api/groups/:id/complete', async (req, res) => {
           quality_agreement: unit.quality_agreement,
           terms_purshase: unit.terms_purshase,
           logistics_agreement: unit.logistics_agreement,
-          payment_conditions: unit.payment_conditions,
-          tech_key_account: unit.tech_key_account,
           // Additional Information
           document_file: unit.document_file,
-          mainplants: unit.mainplants,
-          plant: unit.plant,
-          top: unit.top,
-          status: unit.status,
-          category: unit.category,
-          responsible_text: unit.responsible,
           // Responsible Person
           responsible: unit.Person_id ? {
             Person_id: unit.Person_id,
@@ -1249,71 +1200,96 @@ router.get('/api/plants/:id', async (req, res) => {
 });
 
 // 🆕 Create new plant
+// 🆕 Create new plant
 router.post(
   '/api/plants',
+  (req, res, next) => {
+    console.log('\n=== BEFORE MULTER ===');
+    console.log('Headers:', req.headers);
+    console.log('Content-Type:', req.headers['content-type']);
+    console.log('Body:', req.body);
+    console.log('File:', req.file);
+    console.log('===================\n');
+    next();
+  },
   plantsUpload.single('fichier_accord'),
+  (req, res, next) => {
+    console.log('\n=== AFTER MULTER ===');
+    console.log('Body:', req.body);
+    console.log('File:', req.file);
+    console.log('Files:', req.files);
+    console.log('==================\n');
+    next();
+  },
   async (req, res) => {
     try {
-      const { 
-        unit_id, 
-        plant, 
-        Acheteur_avo, 
-        alias, 
-        top, 
-        incoterms, 
-        place_of_incoterms 
-      } = req.body || {};
+      console.log('=== PLANT CREATION HANDLER ===');
+      console.log('📦 Body:', JSON.stringify(req.body, null, 2));
+      console.log('📎 File:', req.file);
       
+      const {
+        unit_id,
+        plant,
+        Acheteur_avo,
+        alias,
+        top,
+        incoterms,
+        place_of_incoterms
+      } = req.body || {};
+
       const file = req.file;
 
-      // Validate required fields
       if (!unit_id || !plant) {
+        console.log('❌ Validation failed');
         if (file) fs.unlinkSync(file.path);
         return res.status(400).json({ error: 'Unit ID and plant name are required' });
       }
 
-      // Store file path if uploaded
-      const fichier_accord = file ? `/uploads/plants/${file.filename}` : null;
+      let fichier_accord = null;
+      if (file) {
+        fichier_accord = `/uploads/plants/${file.filename}`;
+        console.log('✅ FILE FOUND:');
+        console.log('   Original:', file.originalname);
+        console.log('   Saved as:', file.filename);
+        console.log('   Path:', file.path);
+        console.log('   DB path:', fichier_accord);
+        console.log('   Size:', file.size);
+      } else {
+        console.log('❌ NO FILE RECEIVED BY MULTER');
+      }
 
       const query = `
         INSERT INTO plants 
-          (
-            unit_id, 
-            plant,
-            "Acheteur_avo", 
-            alias, 
-            top, 
-            incoterms, 
-            "place of incoterms",
-            fichier_accord
-          )
+          (unit_id, plant, "Acheteur_avo", alias, top, incoterms, 
+           "place of incoterms", fichier_accord)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *
       `;
 
-      const result = await db.query(query, [
-        unit_id,
-        plant,
-        Acheteur_avo || null,
-        alias || null,
-        top || null,
-        incoterms || null,
-        place_of_incoterms || null,
+      const values = [
+        unit_id, plant, Acheteur_avo || null, alias || null,
+        top || null, incoterms || null, place_of_incoterms || null,
         fichier_accord
-      ]);
+      ];
+
+      console.log('💾 SQL Values:', values);
+
+      const result = await db.query(query, values);
+
+      console.log('✅ Result:', result.rows[0]);
+      console.log('=== END ===\n');
 
       res.status(201).json(result.rows[0]);
     } catch (error) {
-      console.error('Error creating plant:', error);
+      console.error('❌ Error:', error);
       if (req.file) fs.unlinkSync(req.file.path);
-      res.status(500).json({ 
-        error: 'Internal server error', 
-        details: error.message 
+      res.status(500).json({
+        error: 'Internal server error',
+        details: error.message
       });
     }
   }
 );
-
 // 🆕 Update plant
 router.put(
   '/api/plants/:id',
@@ -1321,17 +1297,17 @@ router.put(
   async (req, res) => {
     try {
       const { id } = req.params;
-      const { 
-        unit_id, 
-        plant, 
-        Acheteur_avo, 
-        alias, 
-        top, 
-        incoterms, 
+      const {
+        unit_id,
+        plant,
+        Acheteur_avo,
+        alias,
+        top,
+        incoterms,
         place_of_incoterms,
-        keepExistingFile 
+        keepExistingFile
       } = req.body || {};
-      
+
       const file = req.file;
 
       // Validate required fields
@@ -1403,9 +1379,9 @@ router.put(
       res.json(result.rows[0]);
     } catch (error) {
       console.error('Error updating plant:', error);
-      res.status(500).json({ 
-        error: 'Internal server error', 
-        details: error.message 
+      res.status(500).json({
+        error: 'Internal server error',
+        details: error.message
       });
     }
   }
